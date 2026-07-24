@@ -1,0 +1,97 @@
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { TripayPaymentProvider } from "@/services/payment/TripayPaymentProvider";
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+
+    // buat transaksi di database
+    const transaction = await prisma.transaction.create({
+      data: {
+        invoice: "INV-" + Date.now(),
+        customerNumber: body.customerNumber,
+        productId: parseInt(body.productId),
+        paymentMethodId: parseInt(body.paymentMethodId),
+        subtotal: 10000,
+        adminFee: 1000,
+        total: 11000,
+        status: "WAITING_PAYMENT",
+      },
+    });
+
+    // panggil Tripay
+    const provider = new TripayPaymentProvider();
+    const payment = await provider.createPayment({
+      invoice: transaction.invoice,
+      amount: transaction.total,
+      customerNumber: transaction.customerNumber,
+      method: "QRIS", // bisa diganti sesuai pilihan user
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        ...transaction,
+        paymentUrl: payment.url,
+        expired: payment.expired,
+        qr: payment.qr,
+        vaNumber: payment.vaNumber,
+      },
+    });
+  } catch (error) {
+    console.error(error);
+    return NextResponse.json({ success: false, message: "Checkout gagal" }, { status: 500 });
+  }
+}
+import axios from "axios";
+import crypto from "crypto";
+
+export class TripayPaymentProvider {
+  private apiKey = process.env.TRIPAY_API_KEY!;
+  private privateKey = process.env.TRIPAY_PRIVATE_KEY!;
+  private merchantCode = process.env.TRIPAY_MERCHANT_CODE!;
+  private baseUrl = "https://tripay.co.id/api-sandbox";
+
+  async createPayment(data: {
+    invoice: string;
+    amount: number;
+    customerNumber: string;
+    method: string;
+  }) {
+    const payload = {
+      method: data.method,
+      merchant_ref: data.invoice,
+      amount: data.amount,
+      customer_name: data.customerNumber,
+      customer_email: "dummy@topupku.com",
+      customer_phone: data.customerNumber,
+      order_items: [
+        {
+          sku: "TOPUPKU",
+          name: "TopUpKu Product",
+          price: data.amount,
+          quantity: 1,
+        },
+      ],
+      callback_url: process.env.TRIPAY_CALLBACK_URL,
+      return_url: process.env.TRIPAY_RETURN_URL,
+      expired_time: Math.floor(Date.now() / 1000) + 3600,
+      signature: crypto
+        .createHmac("sha256", this.privateKey)
+        .update(this.merchantCode + data.invoice + data.amount)
+        .digest("hex"),
+    };
+
+    const res = await axios.post(`${this.baseUrl}/transaction/create`, payload, {
+      headers: { Authorization: `Bearer ${this.apiKey}` },
+    });
+
+    return {
+      url: res.data.data.payment_url,
+      expired: res.data.data.expired_time,
+      qr: res.data.data.qr_url,
+      vaNumber: res.data.data.va_number,
+    };
+  }
+}
