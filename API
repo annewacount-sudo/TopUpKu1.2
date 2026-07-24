@@ -95,3 +95,31 @@ export class TripayPaymentProvider {
     };
   }
 }
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+
+export async function POST(req: Request) {
+  try {
+    const body = await req.json();
+
+    // cari transaksi berdasarkan invoice
+    const transaction = await prisma.transaction.findUnique({
+      where: { invoice: body.merchant_ref },
+    });
+
+    if (!transaction) {
+      return NextResponse.json({ success: false, message: "Transaksi tidak ditemukan" }, { status: 404 });
+    }
+
+    // update status transaksi
+    await prisma.transaction.update({
+      where: { id: transaction.id },
+      data: { status: body.status }, // Tripay kirim status: PAID, EXPIRED, dll
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error(error);
+    return NextResponse.json({ success: false, message: "Callback gagal" }, { status: 500 });
+  }
+}
